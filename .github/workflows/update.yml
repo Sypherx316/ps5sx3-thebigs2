@@ -32,19 +32,47 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Anything new?
+        id: check
+        env:
+          FORCE: ${{ inputs.force }}
+        run: |
+          theirs=$(curl -fsS --retry 3 https://ps5sx3-updates.ps5sx2.workers.dev/latest.json | jq -r .build)
+          have=$(jq -r '.build // empty' feed/latest.json 2>/dev/null || true)
+          echo "developer: $theirs, published here: ${have:-nothing}"
+          [ "$FORCE" = "true" ] && have=""
+          echo "have=$have" >> "$GITHUB_OUTPUT"
+          if [ "$theirs" != "$have" ]; then echo "go=true" >> "$GITHUB_OUTPUT"; fi
+
       - name: Tools
-        run: pip install --quiet capstone==5.0.6 keystone-engine==0.9.2 cryptography
+        if: steps.check.outputs.go == 'true'
+        run: |
+          pip install --quiet capstone==5.0.6 keystone-engine==0.9.2 cryptography
+          wget -q https://github.com/ps5-payload-dev/pacbrew-repo/releases/latest/download/ps5-payload-dev.tar.gz
+          sudo tar xf ps5-payload-dev.tar.gz -C /
+          rm ps5-payload-dev.tar.gz
+          sudo apt-get install -y -qq clang-18 lld-18 >/dev/null
+
+      - name: Build the console-side fetcher
+        if: steps.check.outputs.go == 'true'
+        run: |
+          export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+          make -C installer
+          python3 installer/check_elf.py installer/PS5SX3-Installer.elf
 
       - name: Build the update
         id: build
+        if: steps.check.outputs.go == 'true'
         env:
           PS5_KEY: ${{ secrets.PS5_KEY }}
-          FORCE: ${{ inputs.force }}
+          HAVE: ${{ steps.check.outputs.have }}
         run: |
-          have=$(jq -r '.build // empty' feed/latest.json 2>/dev/null || true)
-          [ "$FORCE" = "true" ] && have=""
+          if [ ${#PS5_KEY} -ne 128 ]; then
+            echo "::error::The PS5_KEY secret is missing. Run: gh secret set PS5_KEY -R $GITHUB_REPOSITORY < your-key-file"
+            exit 1
+          fi
           set +e
-          python build_update.py --out out --have "$have" \
+          python build_update.py --out out --have "$HAVE" --installer installer/PS5SX3-Installer.elf \
             --zip-base "https://github.com/$GITHUB_REPOSITORY/releases/download/{build}"
           code=$?
           set -e
