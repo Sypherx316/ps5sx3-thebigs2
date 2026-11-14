@@ -5,3 +5,4 @@ __pycache__/
 *.tb2
 installer/ca_bundle.c
 installer/*.elf
+console/
