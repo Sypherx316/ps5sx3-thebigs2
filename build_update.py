@@ -33,6 +33,8 @@ from autopatch import AlreadyFixed, Refused, autopatch
 
 UPSTREAM = "https://ps5sx3-updates.ps5sx2.workers.dev/latest.json"
 EBOOT = "PPSA99303/eboot.bin"
+INSTALLER = "PPSA99303/PS5SX3-Installer.elf"
+STOCK = "PPSA99303/PS5SX3-Installer-stock.elf"
 AGENT = {"User-Agent": "ps5sx3-thebigs2-autofix"}
 
 
@@ -61,19 +63,23 @@ def read_upstream(url):
     return info
 
 
-def rebuild_zip(original, replacements):
-    """A copy of the zip with some entries' contents replaced; names, order, dates and modes are kept."""
+def rebuild_zip(original, replacements, additions):
+    """A copy of the zip with some entries' contents replaced; names, order, dates and modes are kept.
+    additions: {new name: (data, existing entry whose date and mode it takes)}, placed after that entry."""
     out = io.BytesIO()
     with zipfile.ZipFile(io.BytesIO(original)) as src, zipfile.ZipFile(out, "w") as dst:
+        def put(name, data, like):
+            info = zipfile.ZipInfo(name, like.date_time)
+            info.compress_type = like.compress_type
+            info.external_attr = like.external_attr
+            info.create_system = like.create_system
+            dst.writestr(info, data, compresslevel=9 if like.compress_type == zipfile.ZIP_DEFLATED else None)
         for item in src.infolist():
             data = replacements.get(item.filename)
-            if data is None:
-                data = src.read(item)
-            info = zipfile.ZipInfo(item.filename, item.date_time)
-            info.compress_type = item.compress_type
-            info.external_attr = item.external_attr
-            info.create_system = item.create_system
-            dst.writestr(info, data, compresslevel=9 if item.compress_type == zipfile.ZIP_DEFLATED else None)
+            put(item.filename, src.read(item) if data is None else data, item)
+            for name, (extra, after) in additions.items():
+                if after == item.filename:
+                    put(name, extra, item)
     return out.getvalue()
 
 
@@ -87,6 +93,15 @@ def encrypt(plain, key_hex):
     return body + hmac.new(mac_key, body, hashlib.sha256).digest()
 
 
+def decrypt(package, key_hex):
+    """The console's side, to check each package before it is published."""
+    body, tag = package[:-32], package[-32:]
+    if not hmac.compare_digest(hmac.new(bytes.fromhex(key_hex[64:]), body, hashlib.sha256).digest(), tag):
+        raise SystemExit("the package's HMAC does not verify")
+    dec = Cipher(algorithms.AES(bytes.fromhex(key_hex[:64])), modes.CTR(body[8:24])).decryptor()
+    return dec.update(body[24:]) + dec.finalize()
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--out", required=True)
@@ -95,6 +110,9 @@ def main():
     ap.add_argument("--have", default="", help="build already published here; nothing is done if it is still current")
     ap.add_argument("--upstream", default=UPSTREAM)
     ap.add_argument("--zip-file", help="use this local copy of the developer's zip instead of downloading it")
+    ap.add_argument("--installer", required=True,
+                    help="the console-side fetcher (installer/PS5SX3-Installer.elf); it takes the installer's "
+                         "name and the developer's installer is kept beside it as PS5SX3-Installer-stock.elf")
     args = ap.parse_args()
 
     up = read_upstream(args.upstream)
@@ -111,32 +129,50 @@ def main():
         if EBOOT not in z.namelist():
             raise SystemExit(f"the zip has no {EBOOT}")
         eboot = z.read(EBOOT)
+        if INSTALLER not in z.namelist() or STOCK in z.namelist():
+            raise SystemExit(f"the zip's installer is not where expected ({INSTALLER})")
+        stock = z.read(INSTALLER)
+    fetcher = open(args.installer, "rb").read()
+    if fetcher[:4] != b"ELF" or fetcher == stock:
+        raise SystemExit("--installer is not the fetcher ELF")
 
+    swap = {INSTALLER: fetcher}
+    extra = {STOCK: (stock, INSTALLER)}
     try:
         fixed, report = autopatch(eboot)
-        final, note = rebuild_zip(original, {EBOOT: fixed}), "The Bigs 2 crowd fix applied"
+        final = rebuild_zip(original, {EBOOT: fixed, **swap}, extra)
+        note = "The Bigs 2 crowd fix applied"
     except AlreadyFixed as e:
-        # The developer shipped the fix: pass the build through as it is.
-        report, final, note = {"status": "already_fixed", "reason": str(e)}, original, "fix already in this build"
+        # The developer shipped the fix: the eboot is passed through, the fetcher still goes in so the
+        # console keeps following this feed.
+        report = {"status": "already_fixed", "reason": str(e)}
+        final, note = rebuild_zip(original, swap, extra), "fix already in this build"
     except Refused as e:
         print(f"REFUSED: this build is not recognised, nothing is published.\n  {e}", file=sys.stderr)
         return 2
     print(json.dumps(report, indent=1))
 
-    # Everything except the eboot must come out of the new zip byte for byte
+    # Everything except the eboot and the installer must come out of the new zip byte for byte
     with zipfile.ZipFile(io.BytesIO(original)) as a, zipfile.ZipFile(io.BytesIO(final)) as b:
-        if a.namelist() != b.namelist():
+        expected = a.namelist()
+        expected.insert(expected.index(INSTALLER) + 1, STOCK)
+        if b.namelist() != expected:
             raise SystemExit("the rebuilt zip lists different files")
         for name in a.namelist():
-            if name != EBOOT and a.getinfo(name).CRC != b.getinfo(name).CRC:
+            if name not in (EBOOT, INSTALLER) and a.getinfo(name).CRC != b.getinfo(name).CRC:
                 raise SystemExit(f"the rebuilt zip changed {name}")
+        if b.read(INSTALLER) != fetcher or b.read(STOCK) != stock:
+            raise SystemExit("the installers did not go in as intended")
         if b.testzip() is not None:
             raise SystemExit("the rebuilt zip is damaged")
 
     os.makedirs(args.out, exist_ok=True)
     zip_name = f"PS5SX3-{build}.zip"
+    package = encrypt(final, os.environ.get("PS5_KEY", ""))
+    if decrypt(package, os.environ["PS5_KEY"]) != final:
+        raise SystemExit("the package does not decrypt back to the zip")
     with open(os.path.join(args.out, zip_name + ".tb2"), "wb") as f:
-        f.write(encrypt(final, os.environ.get("PS5_KEY", "")))
+        f.write(package)
     notes = (up.get("notes") or "").strip()
     latest = {
         "build": build, "number": up["number"], "hotfix": up.get("hotfix", 0),
