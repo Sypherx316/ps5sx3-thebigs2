@@ -1,0 +1,104 @@
+name: PS5SX3 + The Bigs 2 fix
+
+# Every 6 hours: if the PS5SX3 developer published a new build, apply the The Bigs 2 fix to it and
+# publish it here, encrypted with PS5_KEY. feed/latest.json is what the console reads.
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build again even if this build is already published here
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Tools
+        run: pip install --quiet capstone==5.0.6 keystone-engine==0.9.2 cryptography
+
+      - name: Build the update
+        id: build
+        env:
+          PS5_KEY: ${{ secrets.PS5_KEY }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          have=$(jq -r '.build // empty' feed/latest.json 2>/dev/null || true)
+          [ "$FORCE" = "true" ] && have=""
+          set +e
+          python build_update.py --out out --have "$have" \
+            --zip-base "https://github.com/$GITHUB_REPOSITORY/releases/download/{build}"
+          code=$?
+          set -e
+          if [ "$code" = 10 ]; then
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          elif [ "$code" = 0 ]; then
+            echo "new=true" >> "$GITHUB_OUTPUT"
+            echo "build=$(jq -r .build out/latest.json)" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::The new PS5SX3 build could not be fixed automatically. Nothing was published; the console stays on the previous build."
+            exit 1
+          fi
+
+      - name: Publish the Release
+        if: steps.build.outputs.new == 'true'
+        env:
+          BUILD: ${{ steps.build.outputs.build }}
+        run: |
+          notes="PS5SX3 $BUILD: $(jq -r .notes out/latest.json)"
+          if gh release view "$BUILD" >/dev/null 2>&1; then
+            gh release upload "$BUILD" out/*.tb2 out/build-info.json --clobber
+            gh release edit "$BUILD" --notes "$notes"
+          else
+            gh release create "$BUILD" out/*.tb2 out/build-info.json --title "PS5SX3 $BUILD + The Bigs 2 fix" --notes "$notes"
+          fi
+          # Keep the three newest Releases
+          gh release list --limit 100 --json tagName,publishedAt --jq 'sort_by(.publishedAt) | reverse | .[3:] | .[].tagName' |
+            while read -r old; do gh release delete "$old" --yes --cleanup-tag; done
+
+      - name: Point the feed at it
+        if: steps.build.outputs.new == 'true'
+        env:
+          BUILD: ${{ steps.build.outputs.build }}
+        run: |
+          # After the Release exists, so the feed never names a package that is not there yet
+          mkdir -p feed
+          cp out/latest.json feed/latest.json
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add feed/latest.json
+          git diff --cached --quiet || git commit -m "feed: PS5SX3 $BUILD"
+          git push
+
+      - name: Keep the schedule alive
+        if: steps.build.outputs.new != 'true'
+        run: |
+          # GitHub switches a schedule off after 60 days without a commit
+          age=$(( ($(date +%s) - $(git log -1 --format=%ct)) / 86400 ))
+          if [ "$age" -ge 45 ]; then
+            mkdir -p feed
+            date -u +%Y-%m-%dT%H:%M:%SZ > feed/last-check.txt
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add feed/last-check.txt
+            git commit -m "feed: still checking"
+            git push
+          fi
