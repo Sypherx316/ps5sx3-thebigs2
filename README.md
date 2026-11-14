@@ -43,3 +43,17 @@ Secreto necesario: `PS5_KEY` (128 caracteres hex: clave AES-256 + clave HMAC), l
 
 Probado con las versiones TB18.7, TB18.9, TB19, TB19.6, TB19.7 y TB20. El resultado para la TB20 es idéntico
 byte a byte al parche hecho a mano y probado en la consola.
+
+## Créditos
+
+Este repositorio no es parte de PS5SX3 ni está afiliado a sus autores; solo aplica un arreglo a sus versiones
+publicadas para uso propio. Todo el mérito del emulador es de quienes lo hacen:
+
+- **PS5SX3**: Sword ([@sword_pdf](https://x.com/sword_pdf), [Swordpdf en GitHub](https://github.com/Swordpdf)).
+  Las versiones y su servidor de actualizaciones son suyos.
+- **RPCS3**: el [equipo de RPCS3](https://github.com/RPCS3/rpcs3), en el que se basa PS5SX3.
+- **El arreglo de The Bigs 2**: [digant73](https://github.com/digant73), commit
+  [5cdab28](https://github.com/digant73/rpcs3/commit/5cdab280718aea5ea97fb8ec646cce4e23abb98f) para el issue
+  [RPCS3 #17741](https://github.com/RPCS3/rpcs3/issues/17741), reportado por Virtua64.
+- **ps5-payload-sdk**: [ps5-payload-dev](https://github.com/ps5-payload-dev/sdk), con el que se compila el
+  instalador de `installer/` (usa curl y OpenSSL de sus paquetes).
