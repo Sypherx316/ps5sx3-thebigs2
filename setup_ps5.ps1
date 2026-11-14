@@ -7,7 +7,8 @@ param([switch]$Undo)
 $ErrorActionPreference = 'Stop'
 $Base = "http://192.168.1.222:8888"
 $Title = "/data/homebrew/PPSA99303"
-$Feed = "https://raw.githubusercontent.com/Sypherx316/ps5sx3-thebigs2/main/feed/latest.json"
+# Everything updates from github.com/Sypherx316/rpcs3: its ps5sx3-sync workflow keeps this notice and the package there
+$Feed = "https://raw.githubusercontent.com/Sypherx316/rpcs3/master/ps5sx3/latest.json"
 $Here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $Upload = Join-Path $Here "..\scripts\ps5upload.ps1"
 

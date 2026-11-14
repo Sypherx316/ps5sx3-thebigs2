@@ -9,10 +9,17 @@ Cada 6 horas un workflow mira si el desarrollador de PS5SX3 publicó una versió
    `PS5SX3-Installer.elf` y deja el original al lado como `PS5SX3-Installer-stock.elf`;
 5. lo publica **cifrado** (`PS5SX3-<versión>.zip.tb2`) en un Release y actualiza `feed/latest.json`.
 
+## De dónde se actualiza la consola
+
+Todas las aplicaciones se actualizan desde los Releases de [Sypherx316/rpcs3](https://github.com/Sypherx316/rpcs3/releases).
+Este repositorio solo **construye** el paquete; el workflow `ps5sx3-sync.yml` de `rpcs3` lo adjunta a su Release más
+nuevo y escribe ahí `ps5sx3/latest.json`, que es el aviso que lee la consola:
+`https://raw.githubusercontent.com/Sypherx316/rpcs3/master/ps5sx3/latest.json`.
+
 ## En la consola
 
 PS5SX3 lee `rpcs3/config/update-url.txt` (dentro de su carpeta) y, si tiene una dirección `https://`, busca
-ahí las actualizaciones. Con la dirección de `feed/latest.json` avisa de cada versión nueva igual que siempre.
+ahí las actualizaciones. Con la dirección de `ps5sx3/latest.json` de `rpcs3` avisa de cada versión nueva igual que siempre.
 Al aceptar, lanza `PS5SX3-Installer.elf`, que aquí es `installer/main.c`:
 
 1. baja `latest.json` y el paquete `.tb2`;
