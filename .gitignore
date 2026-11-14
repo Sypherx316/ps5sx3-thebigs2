@@ -3,3 +3,5 @@ __pycache__/
 *.bin
 *.zip
 *.tb2
+installer/ca_bundle.c
+installer/*.elf

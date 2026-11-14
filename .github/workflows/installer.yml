@@ -1,0 +1,30 @@
+name: Installer (build check)
+
+# Builds the console-side fetcher on every change to it, so a mistake shows up before an update needs it
+on:
+  push:
+    paths: ['installer/**', '.github/workflows/installer.yml']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: PS5 toolchain
+        run: |
+          wget -q https://github.com/ps5-payload-dev/pacbrew-repo/releases/latest/download/ps5-payload-dev.tar.gz
+          sudo tar xf ps5-payload-dev.tar.gz -C /
+          rm ps5-payload-dev.tar.gz
+          sudo apt-get install -y -qq clang-18 lld-18 >/dev/null
+      - name: Build
+        run: |
+          export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
+          make -C installer
+          python3 installer/check_elf.py installer/PS5SX3-Installer.elf
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: installer/PS5SX3-Installer.elf
+          retention-days: 14
