@@ -1,5 +1,10 @@
 # PS5SX3 + fix de The Bigs 2 (automático)
 
+> **Este repositorio está archivado.** Desde noviembre de 2026 PS5SX3 con el fix de The Bigs 2 se compila y se
+> publica en [Sypherx316/rpcs3](https://github.com/Sypherx316/rpcs3/releases) (código en
+> [`.github/ps5sx3`](https://github.com/Sypherx316/rpcs3/tree/master/.github/ps5sx3)), junto a RPCS3 para Windows,
+> Linux y PS5. La consola ya leía su aviso de ahí, así que no cambia nada en la PS5.
+
 Cada 6 horas un workflow mira si el desarrollador de PS5SX3 publicó una versión nueva. Si la hay:
 
 1. baja el zip oficial y comprueba su tamaño y SHA-256;
