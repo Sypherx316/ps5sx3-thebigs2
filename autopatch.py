@@ -7,9 +7,15 @@ index array must start at draw_clause.min_index() and cover get_elements_count()
 immediate-mode draws, the push buffer's own size) instead of [first, first + count).
 
 How a build is recognised: the function is found through its name, which the binary keeps for
-ensure()/get_address() messages, then compared instruction by instruction with the reference build
-(TB20). Only addresses that legitimately move between builds may differ. If anything else differs the
-build is refused and nothing is written, so an unknown build is never half-patched.
+ensure()/get_address() messages, then compared instruction by instruction with a reference build.
+Only addresses that legitimately move between builds may differ. If anything else differs the build is
+refused and nothing is written, so an unknown build is never half-patched.
+
+There are two references, because the developer changed compiler settings in TB24:
+  reference_tb20.json  TB18.7 .. TB22.1: frame pointer kept, locals addressed from rbp
+  reference_tb24.json  TB24.1 onwards:   frame pointer omitted, locals addressed from rsp, so the
+                                         registers and stack slots of the patch are different
+A build is patched with the first reference it matches exactly.
 
 Usage: autopatch.py <eboot.bin> <out.bin> [--report report.json]
 Exit codes: 0 patched, 3 the fix seems to be in the build already (nothing written), 2 refused.
@@ -169,6 +175,7 @@ def compare(ref_code, ref_va, tgt_code, tgt_va, what):
 
 PLACEHOLDERS = {"FXO": 0x11111111, "SRCLOC": 0x22222222, "SUDO": 0x33333333}
 
+# TB20 style: frame pointer in rbp, RSX thread in r11, rdi saved in r15.
 PATCH_A = """
     mov r14, rdx
     mov r15, rdi
@@ -233,6 +240,76 @@ PATCH_B = """
 """
 
 
+# TB24 style: no frame pointer (locals from rsp), RSX thread in r15, rdi saved in r12, rbp and r13 free.
+# The same code as PATCH_A with these slots: [rbp-0x34]->[rsp+0x10] first, [rbp-0x38]->[rsp+0x14] count,
+# [rbp-0x30]->[rsp+0xc], [rbp-0xb0]->[rsp+0x50], [rbp-0x2c]->[rsp+0x8] max, lambda captures at [rsp+0x28].
+PATCH_A_NOFP = """
+    mov r14, rdx
+    mov r12, rdi
+    mov rbx, rsi
+    xor ecx, ecx
+    mov dword ptr [rsp + 0x8], ecx
+    mov dword ptr [rsp + 0x10], ecx
+    lea rcx, [rsp + 0x10]
+    mov qword ptr [rsp + 0x28], rcx
+    lea rcx, [rsp + 0x14]
+    mov qword ptr [rsp + 0x30], rcx
+    lea rcx, [rsp + 0xc]
+    mov qword ptr [rsp + 0x38], rcx
+    lea rcx, [rsp + 0x50]
+    mov qword ptr [rsp + 0x40], rcx
+    lea rcx, [rsp + 0x8]
+    mov qword ptr [rsp + 0x48], rcx
+    lea r10, [rip + 0x11111111]
+    mov rsi, qword ptr [r10 + r9 + {PB_DATA}]
+    mov ecx, dword ptr [r10 + r9 + {PB_SIZE}]
+    test ecx, ecx
+    je array_case
+    mov dword ptr [rsp + 0x14], ecx
+    jmp call_u32
+array_case:
+    movzx ebp, r8b
+    mov ecx, dword ptr [r15 + {RANGE_INDEX}]
+    cmp ecx, dword ptr [r15 + {RANGE_COUNT}]
+    jae {FAIL}
+    mov rdx, qword ptr [r15 + {RANGE_DATA}]
+    lea rcx, [rcx + rcx*2]
+    mov r13d, dword ptr [rdx + rcx*4 + 4]
+    mov ecx, dword ptr [rdx + rcx*4 + 8]
+    mov dword ptr [rsp + 0x14], ecx
+    mov edi, 0x1fffffff
+    and edi, dword ptr [r15 + {INDEX_ADDR}]
+    and eax, 0xf
+    mov esi, eax
+    xor edx, edx
+    lea rcx, [rip + 0x22222222]
+    call {GET_ADDRESS}
+    lea rcx, [rip + 0x33333333]
+    mov rsi, qword ptr [rcx]
+    test ebp, ebp
+    je {B_START}
+    and eax, 0xfffffffc
+    add rsi, rax
+    lea rsi, [rsi + r13*4]
+call_u32:
+    lea rdi, [rsp + 0x28]
+    call {LAMBDA_U32}
+    jmp {JOIN}
+"""
+
+PATCH_B_NOFP = """
+    and eax, 0xfffffffe
+    add rsi, rax
+    lea rsi, [rsi + r13*2]
+    lea rdi, [rsp + 0x28]
+    call {LAMBDA_U16}
+    jmp {JOIN}
+"""
+
+TEMPLATES = {"rbp": (PATCH_A, PATCH_B), "rsp": (PATCH_A_NOFP, PATCH_B_NOFP)}
+REFERENCES = ("reference_tb20.json", "reference_tb24.json")
+
+
 def assemble(template, v, start, end):
     code = bytearray(Ks(KS_ARCH_X86, KS_MODE_64).asm(template.format(**v), start)[0])
     size = len(code)
@@ -255,7 +332,6 @@ def assemble(template, v, start, end):
 
 def autopatch(data):
     """Returns (patched bytes, report). Raises Refused or AlreadyFixed."""
-    ref = json.load(open(os.path.join(HERE, "reference_tb20.json")))
     sf = FakeSelf(bytearray(data))
 
     structs, xrefs = source_location_xrefs(sf, CALC_NAME)
@@ -265,15 +341,41 @@ def autopatch(data):
     if len(structs) != 3 or len(xrefs) != 3:
         raise Refused(f"calculate_required_range: {len(structs)} source locations and {len(xrefs)} "
                       "references instead of 3 and 3")
+    _, raw_xrefs = source_location_xrefs(sf, RAW_NAME)
+    if not raw_xrefs:
+        raise Refused("get_raw_index_array: no reference found")
 
+    reasons = []
+    for name in REFERENCES:
+        ref = json.load(open(os.path.join(HERE, name)))
+        try:
+            patches, report = patch_with(ref, sf, structs, xrefs, raw_xrefs)
+        except Refused as e:
+            reasons.append(f"{ref['build']}: {e}")
+            continue
+        out = bytearray(data)
+        for va, code in patches:
+            o = sf.off(va, len(code))
+            out[o:o + len(code)] = code
+        report = {
+            "status": "patched", "reference": ref["build"],
+            "input_sha256": hashlib.sha256(data).hexdigest(),
+            "output_sha256": hashlib.sha256(out).hexdigest(),
+            **report,
+            "changed_bytes": sum(1 for x, y in zip(data, out) if x != y),
+        }
+        return bytes(out), report
+    raise Refused("this build matches no reference; " + " | ".join(reasons))
+
+
+def patch_with(ref, sf, structs, xrefs, raw_xrefs):
+    """The patches for one reference: [(address, code)], report. Raises Refused if it does not match."""
+    patch_a, patch_b = TEMPLATES[ref.get("frame", "rbp")]
     calc_ref_va, calc_ref = ref["calc"]["va"], bytes.fromhex(ref["calc"]["code"])
     calc_va = xrefs[0] - (ref["calc"]["first_xref"] - calc_ref_va)
     syms, fields = compare(calc_ref, calc_ref_va, sf.read(calc_va, len(calc_ref)), calc_va,
                            "calculate_required_range")
 
-    _, raw_xrefs = source_location_xrefs(sf, RAW_NAME)
-    if not raw_xrefs:
-        raise Refused("get_raw_index_array: no reference found")
     raw_ref_va, raw_ref = ref["raw"]["va"], bytes.fromhex(ref["raw"]["code"])
     raw_va = raw_xrefs[0] - (ref["raw"]["first_xref"] - raw_ref_va)
     _, raw_fields = compare(raw_ref, raw_ref_va, sf.read(raw_va, len(raw_ref)), raw_va,
@@ -313,21 +415,8 @@ def autopatch(data):
         raise Refused("get_address's source location is not the first one of the function")
     start, join = a["start"] + delta, v["JOIN"]
     b_start, b_end = v["B_START"], a["b_end"] + delta
-    patches = [(start, assemble(PATCH_A, v, start, join)), (b_start, assemble(PATCH_B, v, b_start, b_end))]
-
-    out = bytearray(data)
-    for va, code in patches:
-        o = sf.off(va, len(code))
-        out[o:o + len(code)] = code
-    report = {
-        "status": "patched",
-        "input_sha256": hashlib.sha256(data).hexdigest(),
-        "output_sha256": hashlib.sha256(out).hexdigest(),
-        "function": hex(calc_va), "moved_by": delta,
-        "changed_bytes": sum(1 for x, y in zip(data, out) if x != y),
-        "values": {k: hex(x) for k, x in v.items()},
-    }
-    return bytes(out), report
+    patches = [(start, assemble(patch_a, v, start, join)), (b_start, assemble(patch_b, v, b_start, b_end))]
+    return patches, {"function": hex(calc_va), "moved_by": delta, "values": {k: hex(x) for k, x in v.items()}}
 
 
 def main(argv):

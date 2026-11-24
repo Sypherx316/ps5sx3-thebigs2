@@ -33,22 +33,26 @@ Para volver al original: borrar `rpcs3/config/update-url.txt` y renombrar `PS5SX
 a `PS5SX3-Installer.elf`.
 
 PS5SX3 no tiene código fuente público, así que no se compila nada: `autopatch.py` localiza la función
-`calculate_required_range` dentro del binario y la compara instrucción por instrucción con la versión de
-referencia (TB20). Si una versión nueva no coincide, **no se publica nada**, el workflow falla (GitHub
+`calculate_required_range` dentro del binario y la compara instrucción por instrucción con una versión de
+referencia. Hay dos, porque a partir de la TB24 el desarrollador compila sin *frame pointer* (las variables
+van por `rsp` en vez de `rbp` y cambian los registros), así que el parche tiene dos versiones:
+`reference_tb20.json` (TB18.7 a TB22.1) y `reference_tb24.json` (TB24.1 en adelante). Si una versión nueva no
+coincide con ninguna, **no se publica nada**, el workflow falla (GitHub
 avisa por correo) y la consola se queda en la versión anterior.
 
 | Archivo | Para qué |
 |---|---|
 | `autopatch.py` | Aplica el fix a un `eboot.bin` |
-| `reference_tb20.json` | La función tal como está en la TB20, para reconocerla en otras versiones |
-| `make_reference.py` | Regenera la referencia desde el `eboot.bin` original de la TB20 |
+| `reference_tb20.json` | La función tal como está en la TB20, para reconocer las versiones con *frame pointer* |
+| `reference_tb24.json` | La función tal como está en la TB24.1, para reconocer las versiones sin *frame pointer* |
+| `make_reference.py` | Regenera una referencia desde el `eboot.bin` original de la TB20 o de la TB24.1 |
 | `build_update.py` | Baja la versión del desarrollador, la arregla, la cifra y escribe `latest.json` |
 | `feed/latest.json` | Lo que lee la consola: versión, tamaño y SHA-256 del zip arreglado |
 | `installer/` | El instalador propio para la consola (C, ps5-payload-sdk) |
 
 Secreto necesario: `PS5_KEY` (128 caracteres hex: clave AES-256 + clave HMAC), la misma que tiene la consola.
 
-Probado con las versiones TB18.7, TB18.9, TB19, TB19.6, TB19.7 y TB20. El resultado para la TB20 es idéntico
+Probado con las versiones TB18.7, TB18.9, TB19, TB19.6, TB19.7, TB20, TB21, TB22, TB22.1 y TB24.1. El resultado para la TB20 es idéntico
 byte a byte al parche hecho a mano y probado en la consola.
 
 ## Créditos
